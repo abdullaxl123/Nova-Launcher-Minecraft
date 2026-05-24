@@ -2,6 +2,8 @@
 
 A Minecraft Java Edition launcher thats fully opensource and premium/cracked
 
+If there are Detections, These are false detections because its built with pyinstaller And the code is free to check if you think its a virus
+
 ## Features
 
 - **Profiles** each profile has its own folder containing mods, saves, screenshots, resource packs, shader packs and logs
