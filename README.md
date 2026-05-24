@@ -1,6 +1,6 @@
 # Nova Launcher v2
 
-A Minecraft Java Edition launcher with full profile isolation.
+A Minecraft Java Edition launcher thats fully opensource and premium/cracked
 
 ## Features
 
