@@ -1,4 +1,4 @@
-# Nova Launcher v2
+# Nova Launcher v1
 ![Logo](image.png)
 A Minecraft Java Edition launcher thats fully opensource and premium/cracked
 
