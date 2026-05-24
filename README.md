@@ -2,7 +2,7 @@
 
 A Minecraft Java Edition launcher thats fully opensource and premium/cracked
 
-If there are Detections, These are false detections because its built with pyinstaller, And because i dont have a signature, the code is free to check if you think its a virus
+If there are Detections, Then its false detections because its built with pyinstaller, And because i dont have a signature, the code is free to check if you think its a virus
 
 ## Features
 
