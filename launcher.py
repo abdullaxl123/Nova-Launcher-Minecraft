@@ -910,6 +910,7 @@ class NovaLauncher(ctk.CTk):
         self.geometry("1100x680")
         self.minsize(900, 600)
         self.configure(fg_color=BG)
+        self.config(cursor="arrow")  # ensure system cursor is always visible
         self.accounts  = AccountManager()
         self.profiles  = ProfileManager()
         self.settings  = Settings()
@@ -919,62 +920,34 @@ class NovaLauncher(ctk.CTk):
         self._setup_drag_fix()
 
     def _setup_drag_fix(self):
-        """On Windows, freeze updates while the window is being dragged to kill UI lag."""
+        """Reduce UI lag while dragging on Windows using WM_ENTERSIZEMOVE hook."""
         if sys.platform != "win32":
             return
-        self._dragging = False
-
-        def _on_move_start(e):
-            if not self._dragging:
-                self._dragging = True
-
-        def _on_move_end(e):
-            if self._dragging:
-                self._dragging = False
-                # Force a clean redraw once drag ends
-                self.update_idletasks()
-
-        # WM_MOVING fires continuously while dragging the title bar
-        # Binding <Configure> catches both move and resize events
-        self.bind("<Configure>", _on_move_end)
-
-        # Use Windows message hook via ctypes to intercept WM_ENTERSIZEMOVE /
-        # WM_EXITSIZEMOVE - the most reliable way to detect drag start/end
         try:
-            import ctypes
-            import ctypes.wintypes
-
+            import ctypes, ctypes.wintypes
             WM_ENTERSIZEMOVE = 0x0231
             WM_EXITSIZEMOVE  = 0x0232
-            WM_SIZE          = 0x0005
-            WM_MOVE          = 0x0003
-
-            hwnd = self.winfo_id()
-            old_wndproc = ctypes.windll.user32.GetWindowLongPtrW(hwnd, -4)
-
+            hwnd = ctypes.windll.user32.GetParent(self.winfo_id()) or self.winfo_id()
+            old_proc = ctypes.windll.user32.GetWindowLongPtrW(hwnd, -4)
             WNDPROCTYPE = ctypes.WINFUNCTYPE(
                 ctypes.c_long, ctypes.wintypes.HWND,
-                ctypes.c_uint, ctypes.wintypes.WPARAM, ctypes.wintypes.LPARAM
-            )
-
-            def wnd_proc(hwnd, msg, wparam, lparam):
+                ctypes.c_uint, ctypes.wintypes.WPARAM, ctypes.wintypes.LPARAM)
+            def _proc(h, msg, wp, lp):
                 if msg == WM_ENTERSIZEMOVE:
-                    # Window grab started - tell tkinter to stop doing work
-                    self._dragging = True
-                    # Reduce update rate while dragging
-                    self.after_cancel(getattr(self, '_idle_cb', ""))
+                    # Suspend tkinter's internal idle loop during drag
+                    self.tk.call("tk", "busy", "hold", self._w)
                 elif msg == WM_EXITSIZEMOVE:
-                    # Window released - do one full redraw and resume
-                    self._dragging = False
+                    try:
+                        self.tk.call("tk", "busy", "forget", self._w)
+                    except Exception:
+                        pass
                     self.update_idletasks()
-                return ctypes.windll.user32.CallWindowProcW(
-                    old_wndproc, hwnd, msg, wparam, lparam)
-
-            self._wnd_proc_ref = WNDPROCTYPE(wnd_proc)   # keep reference alive
-            ctypes.windll.user32.SetWindowLongPtrW(hwnd, -4,
-                ctypes.cast(self._wnd_proc_ref, ctypes.c_void_p).value)
+                return ctypes.windll.user32.CallWindowProcW(old_proc, h, msg, wp, lp)
+            self._wndproc = WNDPROCTYPE(_proc)
+            ctypes.windll.user32.SetWindowLongPtrW(
+                hwnd, -4, ctypes.cast(self._wndproc, ctypes.c_void_p).value)
         except Exception:
-            pass   # Non-fatal - falls back to the <Configure> bind above
+            pass
 
     # ── Layout ────────────────────────────────────────────────────────────────
     def _build_ui(self):
@@ -995,6 +968,7 @@ class NovaLauncher(ctk.CTk):
                             ("Versions",  "⬡"),
                             ("Accounts",  "👤"),
                             ("Settings",  "⚙"),
+                            ("Skin",      "👕"),
                             ("Info",      "ℹ")]:
             b = ctk.CTkButton(
                 self.sidebar, text=f"  {icon}  {name}", anchor="w",
@@ -1018,6 +992,7 @@ class NovaLauncher(ctk.CTk):
                                ("Versions", self._page_versions),
                                ("Accounts", self._page_accounts),
                                ("Settings", self._page_settings),
+                               ("Skin",     self._page_skin),
                                ("Info",     self._page_info)]:
             f = ctk.CTkFrame(self.main, fg_color=BG, corner_radius=0)
             builder(f)
@@ -1896,6 +1871,211 @@ class NovaLauncher(ctk.CTk):
         self.settings.save()
         self.status_lbl.configure(text="Settings saved ✓")
 
+
+    def _page_skin(self, f):
+        """Skin picker with 2D flat preview and slim/normal toggle."""
+        from tkinter import Canvas
+        import json as _json
+
+        SKIN_F = APP_DIR / "skin.json"
+
+        def _load_state():
+            try:
+                return _json.loads(SKIN_F.read_text())
+            except Exception:
+                return {"path": None, "slim": False}
+
+        def _save_state(path, slim):
+            SKIN_F.write_text(_json.dumps({"path": str(path) if path else None, "slim": slim}))
+
+        state = _load_state()
+        _skin_path = [Path(state["path"]) if state["path"] else None]
+        _slim      = [bool(state["slim"])]
+
+        # ── Header ────────────────────────────────────────────────────────────
+        label(f, "Skin", size=22, weight="bold").pack(anchor="w", padx=24, pady=(24, 4))
+
+        # Notice banner
+        notice = ctk.CTkFrame(f, fg_color="#2a1f0a", corner_radius=8)
+        notice.pack(fill="x", padx=24, pady=(0, 16))
+        label(notice,
+              "⚠  Skins are client-side only. Other players will not see your skin unless "
+              "they are on the same server with a skin mod, or you are using a skin server.",
+              size=11, color="#f0a030", wraplength=700).pack(anchor="w", padx=14, pady=10)
+
+        body = ctk.CTkFrame(f, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=24)
+
+        # ── Left: controls ────────────────────────────────────────────────────
+        left = ctk.CTkFrame(body, fg_color="transparent")
+        left.pack(side="left", fill="y", padx=(0, 24))
+
+        ctrl_card = ctk.CTkFrame(left, fg_color=CARD, corner_radius=12)
+        ctrl_card.pack(fill="x", pady=(0, 12))
+
+        label(ctrl_card, "Skin File", size=13, weight="bold").pack(anchor="w", padx=16, pady=(14, 4))
+        path_lbl = label(ctrl_card, "No skin selected", size=11, color=SUBTEXT)
+        path_lbl.pack(anchor="w", padx=16, pady=(0, 8))
+
+        def _pick():
+            from tkinter import filedialog
+            p = filedialog.askopenfilename(
+                title="Select Skin PNG",
+                filetypes=[("PNG Image", "*.png")],
+                parent=f.winfo_toplevel()
+            )
+            if p:
+                _skin_path[0] = Path(p)
+                path_lbl.configure(text=Path(p).name)
+                _save_state(_skin_path[0], _slim[0])
+                _redraw()
+
+        btn(ctrl_card, "Browse PNG...", _pick, width=180).pack(anchor="w", padx=16, pady=(0, 14))
+
+        # Arm style
+        label(ctrl_card, "Arm Style", size=13, weight="bold").pack(anchor="w", padx=16, pady=(4, 6))
+        arm_var = StringVar(value="Slim" if _slim[0] else "Normal")
+        seg = ctk.CTkSegmentedButton(ctrl_card, values=["Normal", "Slim"],
+                                     variable=arm_var,
+                                     fg_color=BG, selected_color=ACCENT,
+                                     selected_hover_color="#00c47a",
+                                     unselected_color=PANEL,
+                                     text_color=TEXT, width=180)
+        seg.pack(anchor="w", padx=16, pady=(0, 14))
+
+        def _on_arm_change(val):
+            _slim[0] = (val == "Slim")
+            _save_state(_skin_path[0], _slim[0])
+            _redraw()
+        seg.configure(command=_on_arm_change)
+
+        # Info
+        info_card = ctk.CTkFrame(left, fg_color=CARD, corner_radius=12)
+        info_card.pack(fill="x")
+        label(info_card, "How to use", size=12, weight="bold").pack(anchor="w", padx=16, pady=(12, 4))
+        label(info_card,
+              "1. Pick your 64×64 skin PNG\n"
+              "2. Choose Normal or Slim arms\n"
+              "3. Use CustomSkinLoader mod\n"
+              "   for others to see your skin",
+              size=11, color=SUBTEXT, justify="left").pack(anchor="w", padx=16, pady=(0, 14))
+
+        # ── Right: skin viewer canvas ─────────────────────────────────────────
+        right = ctk.CTkFrame(body, fg_color=CARD, corner_radius=12)
+        right.pack(side="left", fill="both", expand=True)
+
+        label(right, "Preview", size=13, weight="bold").pack(pady=(14, 4))
+
+        canvas = Canvas(right, bg="#1a1d24", highlightthickness=0, width=220, height=340)
+        canvas.pack(pady=(0, 14))
+
+        SCALE = 4  # each MC pixel = 4 canvas pixels
+
+        def _draw_placeholder():
+            canvas.delete("all")
+            # Draw a simple steve silhouette outline as placeholder
+            W, H = 220, 340
+            cx = W // 2
+            # head
+            canvas.create_rectangle(cx-16, 20, cx+16, 52, outline=SUBTEXT, fill="#2a2d34", width=1)
+            canvas.create_text(cx, 36, text="?", fill=SUBTEXT, font=("Segoe UI", 18, "bold"))
+            # body
+            canvas.create_rectangle(cx-12, 56, cx+12, 100, outline=SUBTEXT, fill="#2a2d34", width=1)
+            # left arm
+            aw = 6 if not _slim[0] else 5
+            canvas.create_rectangle(cx-12-aw*2, 56, cx-12, 100, outline=SUBTEXT, fill="#2a2d34", width=1)
+            # right arm
+            canvas.create_rectangle(cx+12, 56, cx+12+aw*2, 100, outline=SUBTEXT, fill="#2a2d34", width=1)
+            # left leg
+            canvas.create_rectangle(cx-12, 104, cx, 148, outline=SUBTEXT, fill="#2a2d34", width=1)
+            # right leg
+            canvas.create_rectangle(cx, 104, cx+12, 148, outline=SUBTEXT, fill="#2a2d34", width=1)
+            canvas.create_text(cx, 180, text="No skin selected", fill=SUBTEXT,
+                               font=("Segoe UI", 10))
+
+        def _draw_skin(img):
+            """Draw a flat front-facing skin preview from the PIL image."""
+            try:
+                from PIL import Image as PILImage, ImageTk
+            except ImportError:
+                canvas.delete("all")
+                canvas.create_text(110, 170, text="Pillow not installed.\npip install Pillow",
+                                   fill=SUBTEXT, font=("Segoe UI", 11), justify="center")
+                return
+
+            canvas.delete("all")
+            S = SCALE
+            cx = 110  # canvas center x
+            oy = 10   # y offset from top
+
+            skin = img.convert("RGBA")
+            W, H = skin.size
+            if W < 64 or H < 32:
+                canvas.create_text(110, 170, text="Invalid skin size", fill=SUBTEXT,
+                                   font=("Segoe UI", 11))
+                return
+
+            is64x64 = (H >= 64)
+
+            def paste_region(sx, sy, sw, sh, dx, dy, flip=False):
+                """Crop a region from skin and draw it on canvas at (dx,dy)."""
+                region = skin.crop((sx, sy, sx+sw, sy+sh))
+                if flip:
+                    region = region.transpose(PILImage.FLIP_LEFT_RIGHT)
+                region = region.resize((sw*S, sh*S), PILImage.NEAREST)
+                tk_img = ImageTk.PhotoImage(region)
+                canvas._skin_imgs = getattr(canvas, "_skin_imgs", [])
+                canvas._skin_imgs.append(tk_img)
+                canvas.create_image(dx, dy, anchor="nw", image=tk_img)
+
+            arm_w = 3 if _slim[0] else 4  # slim = 3px wide, normal = 4px
+
+            # Head front face: skin[8,8 -> 16,16]
+            paste_region(8, 8, 8, 8,  cx - 4*S, oy)
+            # Hat layer
+            paste_region(40, 8, 8, 8, cx - 4*S, oy)
+
+            # Body front: skin[20,20 -> 28,32]  (8 wide, 12 tall)
+            paste_region(20, 20, 8, 12, cx - 4*S, oy + 8*S)
+
+            # Right arm front (player's right = left on screen)
+            paste_region(44, 20, arm_w, 12, cx - (4+arm_w)*S, oy + 8*S)
+
+            # Left arm front - mirrored from right if old skin format
+            if is64x64:
+                paste_region(36, 52, arm_w, 12, cx + 4*S, oy + 8*S)
+            else:
+                paste_region(44, 20, arm_w, 12, cx + 4*S, oy + 8*S, flip=True)
+
+            # Right leg front
+            paste_region(4, 20, 4, 12, cx - 4*S, oy + 20*S)
+
+            # Left leg front - mirrored if old format
+            if is64x64:
+                paste_region(20, 52, 4, 12, cx, oy + 20*S)
+            else:
+                paste_region(4, 20, 4, 12, cx, oy + 20*S, flip=True)
+
+        def _redraw():
+            canvas._skin_imgs = []
+            if not _skin_path[0] or not _skin_path[0].exists():
+                _draw_placeholder()
+                return
+            try:
+                from PIL import Image as PILImage
+                img = PILImage.open(_skin_path[0])
+                _draw_skin(img)
+            except ImportError:
+                _draw_placeholder()
+            except Exception as e:
+                canvas.delete("all")
+                canvas.create_text(110, 170, text=f"Error: {e}", fill=DANGER,
+                                   font=("Segoe UI", 10), width=200, justify="center")
+
+        # Load saved skin on open
+        if _skin_path[0] and _skin_path[0].exists():
+            path_lbl.configure(text=_skin_path[0].name)
+        _redraw()
 
     def _page_info(self, f):
         label(f, "Info", size=22, weight="bold").pack(anchor="w", padx=24, pady=(24, 20))
