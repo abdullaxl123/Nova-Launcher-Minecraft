@@ -1,6 +1,7 @@
 # Nova Launcher v1.1
 
 A Minecraft Java Edition launcher
+
 If it gets false detected its because its a pyinstaller or because i have no signature
 
 ## Features
